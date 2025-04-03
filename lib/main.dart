@@ -1,10 +1,10 @@
+import 'package:demo_1/database_helper.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart' show DateFormat; // Import for Date Formatting
+import 'package:intl/intl.dart'; // Import for Date Formatting
 import 'package:carousel_slider/carousel_slider.dart'; // For Health Tips Carousel
 import 'notification_service.dart'; // Import the notification service
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -452,9 +452,6 @@ class MyHomePage extends StatelessWidget {
 // 📌 Reminder Page
 
 
-// import 'package:intl/intl.dart';
-// import 'package:flutter/material.dart';
-// import 'notification_service.dart';
 
 class FirstRoute extends StatefulWidget {
   const FirstRoute({super.key});
@@ -470,11 +467,22 @@ class _FirstRouteState extends State<FirstRoute> {
   final TextEditingController _descriptionController = TextEditingController();
   final List<Map<String, dynamic>> reminders = [];
   final NotificationService _notificationService = NotificationService();
+  final DatabaseHelper _dbHelper = DatabaseHelper.instance;
 
   @override
   void initState() {
     super.initState();
-    _notificationService.init();
+    _initializeApp();
+  }
+
+  Future<void> _initializeApp() async {
+    await _notificationService.init();
+    await _loadReminders();
+  }
+
+  Future<void> _loadReminders() async {
+    final List<Map<String, dynamic>> loadedReminders = await _dbHelper.queryAll();
+    setState(() => reminders.addAll(loadedReminders));
   }
 
   Future<void> _selectDate(BuildContext context) async {
@@ -503,10 +511,11 @@ class _FirstRouteState extends State<FirstRoute> {
     }
   }
 
-  void _addReminder() {
+  void _addReminder() async {
     if (_titleController.text.isNotEmpty &&
         selectedDate != null &&
         selectedTime != null) {
+
       final DateTime scheduledTime = DateTime(
         selectedDate!.year,
         selectedDate!.month,
@@ -515,36 +524,48 @@ class _FirstRouteState extends State<FirstRoute> {
         selectedTime!.minute,
       );
 
-      // Generate a unique ID
-      final int uniqueId = DateTime.now().millisecondsSinceEpoch;
+      // Fixed ID generation
+      final int uniqueId = DateTime.now().millisecondsSinceEpoch % 2147483647;
 
-      // Schedule the notification with the unique ID
-      _notificationService.scheduleNotification(
-        id: uniqueId,
-        title: _titleController.text,
-        body: _descriptionController.text,
-        scheduledTime: scheduledTime,
-      );
+      try {
+        await _notificationService.scheduleNotification(
+          id: uniqueId,
+          title: _titleController.text,
+          body: _descriptionController.text,
+          scheduledTime: scheduledTime,
+        );
 
-      setState(() {
-        reminders.add({
-          "id": uniqueId, // Store the unique ID
+        // Save to database
+        final newReminder = {
+          "id": uniqueId,
           "title": _titleController.text,
           "description": _descriptionController.text,
           "date": DateFormat('yyyy-MM-dd').format(selectedDate!),
           "time": selectedTime!.format(context),
+          "scheduled_time": scheduledTime.millisecondsSinceEpoch,
+        };
+
+        await _dbHelper.insert(newReminder);
+
+        setState(() {
+          reminders.add(newReminder);
+          _titleController.clear();
+          _descriptionController.clear();
+          selectedDate = null;
+          selectedTime = null;
         });
-        _titleController.clear();
-        _descriptionController.clear();
-        selectedDate = null;
-        selectedTime = null;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Reminder Added Successfully!")),
-      );
+
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Reminder Added Successfully!")),
+        );
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to add reminder: ${e.toString()}")),
+        );
+      }
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -572,16 +593,26 @@ class _FirstRouteState extends State<FirstRoute> {
                       leading: const Icon(Icons.notifications, color: Colors.blue),
                       title: Text(reminders[index]["title"]),
                       subtitle: Text(
-                          "${reminders[index]["description"]}\nDate: ${reminders[index]["date"]} Time: ${reminders[index]["time"]}"),
+                        "${reminders[index]["description"]}\n"
+                            "Date: ${reminders[index]["date"]} "
+                            "Time: ${reminders[index]["time"]}",
+                      ),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete, color: Colors.red),
-                        onPressed: () {
-                          setState(() {
-                            // Cancel the notification using the stored unique ID
-                            _notificationService
-                                .cancelNotification(reminders[index]["id"]);
-                            reminders.removeAt(index);
-                          });
+                        onPressed: () async {
+                          try {
+                            await _notificationService.cancelNotification(
+                                reminders[index]["id"]);
+                            await _dbHelper.delete(reminders[index]["id"]);
+                            setState(() {
+                              reminders.removeAt(index);
+                            });
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                  content: Text("Failed to delete: ${e.toString()}")),
+                            );
+                          }
                         },
                       ),
                     ),
@@ -595,6 +626,7 @@ class _FirstRouteState extends State<FirstRoute> {
     );
   }
 
+  // Your original dialog implementation - completely unchanged
   Widget _buildAddReminderDialog() {
     return AlertDialog(
       title: const Text("Add Reminder"),
